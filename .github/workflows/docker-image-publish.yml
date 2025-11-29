@@ -1,9 +1,8 @@
 name: Rebuild when upstream image updates
 
-# Run every 30 minutes (adjust as you wish); also allow manual run
 on:
   schedule:
-    - cron: '*/05 * * * *'
+    - cron: '*/5 * * * *'    # run every 5 minutes
   workflow_dispatch:
 
 permissions:
@@ -13,28 +12,19 @@ jobs:
   check-and-build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository (allow commits)
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install docker CLI (runner already has it; this is safe no-op)
-        run: |
-          docker --version
+      - name: Enable Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Pull upstream image
-        run: |
-          docker pull superseriousbusiness/gotosocial:latest
-
-      - name: Get upstream digest
+      - name: Get upstream digest from registry (no caching)
         id: getdigest
         run: |
-          # get the first RepoDigest (like superseriousbusiness/gotosocial@sha256:...)
-          DIGEST=$(docker image inspect superseriousbusiness/gotosocial:latest --format '{{index .RepoDigests 0}}' || true)
-          if [ -z "$DIGEST" ]; then
-            # fallback: use image ID if RepoDigests not present
-            DIGEST=$(docker image inspect superseriousbusiness/gotosocial:latest --format '{{.Id}}')
-          fi
+          DIGEST=$(docker buildx imagetools inspect superseriousbusiness/gotosocial:latest --format '{{json .Descriptor.Digest}}' | tr -d '"')
+          echo "Upstream digest: $DIGEST"
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
 
       - name: Read previous digest (if any)
@@ -45,28 +35,27 @@ jobs:
           else
             PREV=""
           fi
+          echo "Previous digest: $PREV"
           echo "prev=$PREV" >> $GITHUB_OUTPUT
 
       - name: Compare digests
         id: compare
         run: |
-          echo "upstream=${{ steps.getdigest.outputs.digest }}"
-          echo "prev=${{ steps.prev.outputs.prev }}"
           if [ "${{ steps.getdigest.outputs.digest }}" = "${{ steps.prev.outputs.prev }}" ]; then
+            echo "No change detected."
             echo "changed=false" >> $GITHUB_OUTPUT
           else
+            echo "Change detected!"
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Stop early if not changed
         if: ${{ steps.compare.outputs.changed == 'false' }}
-        run: |
-          echo "Upstream image digest unchanged. Nothing to do."
-      
-      - name: Prepare to build and push (only on change)
+        run: echo "Upstream image digest unchanged. Nothing to do."
+
+      - name: Save new digest
         if: ${{ steps.compare.outputs.changed == 'true' }}
-        run: |
-          echo "${{ steps.getdigest.outputs.digest }}" > last_digest.txt
+        run: echo "${{ steps.getdigest.outputs.digest }}" > last_digest.txt
 
       - name: Commit updated digest
         if: ${{ steps.compare.outputs.changed == 'true' }}
@@ -84,11 +73,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push new image to Docker Hub
+      - name: Build and push image
         if: ${{ steps.compare.outputs.changed == 'true' }}
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/your-repo:latest
-          # add additional tags if you want, e.g. ${{ github.run_number }}
