@@ -20,14 +20,14 @@ jobs:
       - name: Enable Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Get upstream digest from registry (robust)
+      - name: Get upstream digest from registry (correct)
         id: getdigest
         run: |
           DIGEST=$(docker buildx imagetools inspect superseriousbusiness/gotosocial:latest \
-            --format '{{json .Manifest.Digest}}' | tr -d '"')
+            --format '{{.Digest}}')
 
           if [ -z "$DIGEST" ]; then
-            echo "ERROR: Failed to detect upstream digest"
+            echo "ERROR: Failed to get upstream digest"
             exit 1
           fi
 
