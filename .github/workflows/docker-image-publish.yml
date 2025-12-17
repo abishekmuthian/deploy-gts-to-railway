@@ -20,21 +20,66 @@ jobs:
       - name: Enable Docker Buildx
         uses: docker/setup-buildx-action@v3
         
-      - name: Get upstream digest from registry (bulletproof)
+      - name: Get upstream digest from registry (robust + fallbacks)
         id: getdigest
         run: |
-          DIGEST=$(docker buildx imagetools inspect superseriousbusiness/gotosocial:latest \
-            | grep '^Digest:' \
-            | awk '{print $2}')
+          set -euo pipefail
 
-          if [ -z "$DIGEST" ]; then
-            echo "ERROR: Failed to detect upstream digest"
-            exit 1
+          IMAGE="superseriousbusiness/gotosocial:latest"
+          DIGEST=""
+
+          echo "Attempt 1: docker buildx imagetools inspect and parse 'Digest:' line"
+          # Ensure buildx is available earlier in the workflow (docker/setup-buildx-action)
+          RAW=$(docker buildx imagetools inspect "$IMAGE" 2>/dev/null || true)
+          if [ -n "$RAW" ]; then
+            DIGEST=$(printf '%s\n' "$RAW" | grep '^Digest:' | awk '{print $2}' | head -n1 || true)
           fi
 
-          echo "Upstream digest: $DIGEST"
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          if [ -n "$DIGEST" ]; then
+            echo "Found digest (method 1): $DIGEST"
+            echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
+          echo "Attempt 2: imagetools inspect --raw + jq"
+          # Install jq temporarily if absent (safe on ubuntu-latest)
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "jq not found — installing jq"
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
+          RAW_JSON=$(docker buildx imagetools inspect "$IMAGE" --raw 2>/dev/null || true)
+          if [ -n "$RAW_JSON" ]; then
+            # Try to extract manifest digest field(s)
+            DIGEST=$(printf '%s\n' "$RAW_JSON" | jq -r '(.manifest // .Manifest // .manifestList // .index // .Digest // .digest) // empty' | head -n1 || true)
+          fi
+
+          if [ -n "$DIGEST" ]; then
+            echo "Found digest (method 2): $DIGEST"
+            echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Attempt 3: Docker Hub API fallback (public repository)"
+          # Query Docker Hub tags API for 'latest' — may return several images; pick digest if present
+          HUB_API="https://hub.docker.com/v2/repositories/superseriousbusiness/gotosocial/tags/latest"
+          HUB_JSON=$(curl -sS "$HUB_API" || true)
+          if [ -n "$HUB_JSON" ]; then
+            # Try to extract digest from 'images' array (first image)
+            DIGEST=$(printf '%s\n' "$HUB_JSON" | jq -r '.images[0].digest // .images[].digest // empty' | head -n1 || true)
+          fi
+
+          if [ -n "$DIGEST" ]; then
+            echo "Found digest (method 3 - Docker Hub API): $DIGEST"
+            echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "ERROR: Failed to detect upstream digest via any method"
+          echo "Raw buildx output was:"
+          printf '%s\n' "$RAW" || true
+          exit 1
 
       - name: Read previous digest (if any)
         id: prev
