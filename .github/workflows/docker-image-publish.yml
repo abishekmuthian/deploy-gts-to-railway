@@ -79,4 +79,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/your-repo:latest
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/deploy-gts-to-railway:latest
